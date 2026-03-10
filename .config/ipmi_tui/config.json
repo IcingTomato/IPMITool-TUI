@@ -1,8 +1,8 @@
 {
   "mode": "oob",
-  "host": "192.168.137.111",
-  "refresh_interval": 3,
+  "host": "33.235.17.233",
+  "refresh_interval": 5,
   "remember_cred": true,
-  "username": "ADMIN",
+  "username": "sankuai",
   "password": "Admin@888"
 }
