@@ -1,0 +1,12 @@
+config.ini syntax:
+
+mode=oob
+host=
+username=
+password=
+refresh_interval=0
+remember_cred=0
+
+
+config.ini path:
+~/.config/ipmi_tui/config.ini
