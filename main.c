@@ -17,6 +17,7 @@ struct Sensor {
     char name[64];
     float history[HISTORY_LEN];
     int hist_idx;
+    int count;   // 有效读数数量，首次读数预填充 history 用
 };
 
 struct AppConfig {
@@ -38,6 +39,7 @@ struct AppState {
     char bmc[32];
     char sel[5][128];
     char last_error[128];
+    int fetching;  // 1=正在后台拉取数据
 };
 
 void draw_box(int y, int x, int h, int w, const char *title) {
@@ -130,10 +132,10 @@ void load_config(struct AppConfig *cfg) {
         if(!eq) continue;
         *eq=0; char *key=line, *val=eq+1;
         val[strcspn(val,"\r\n")]=0;
-        if(strcmp(key,"mode")==0) strcpy(cfg->mode,val);
-        else if(strcmp(key,"host")==0) strcpy(cfg->host,val);
-        else if(strcmp(key,"username")==0) strcpy(cfg->username,val);
-        else if(strcmp(key,"password")==0) strcpy(cfg->password,val);
+        if(strcmp(key,"mode")==0) strncpy(cfg->mode,val,sizeof(cfg->mode)-1);
+        else if(strcmp(key,"host")==0) strncpy(cfg->host,val,sizeof(cfg->host)-1);
+        else if(strcmp(key,"username")==0) strncpy(cfg->username,val,sizeof(cfg->username)-1);
+        else if(strcmp(key,"password")==0) strncpy(cfg->password,val,sizeof(cfg->password)-1);
         else if(strcmp(key,"refresh_interval")==0) cfg->refresh_interval=atoi(val);
         else if(strcmp(key,"remember_cred")==0) cfg->remember_cred=atoi(val);
     }
@@ -153,12 +155,12 @@ void save_config(struct AppConfig *cfg) {
 static void build_cmd(char *buf, size_t bufsz,
                       const struct AppConfig *cfg, const char *subcmd) {
     if(strcmp(cfg->mode, "oob") == 0) {
+        /* -N 4: 单次响应超时4s; -R 1: 不重试; 外层 timeout 10 兜底防挂死 */
         snprintf(buf, bufsz,
-            "ipmitool -I lanplus -H '%s' -U '%s' -P '%s' %s 2>/dev/null",
+            "timeout 10 ipmitool -I lanplus -N 4 -R 1 -H '%s' -U '%s' -P '%s' %s 2>/dev/null",
             cfg->host, cfg->username, cfg->password, subcmd);
     } else {
-        /* inband: 优先尝试 /dev/ipmi0，找不到时 ipmitool 自动 fallback */
-        snprintf(buf, bufsz, "ipmitool %s 2>/dev/null", subcmd);
+        snprintf(buf, bufsz, "timeout 5 ipmitool %s 2>/dev/null", subcmd);
     }
 }
 
@@ -218,14 +220,14 @@ void fetch_ipmi(struct AppState *state) {
             char *val  = strtok(NULL, "|");
             char *unit = strtok(NULL, "|");
             if(!name || !val || !unit) continue;
-            /* 去除首尾空格 */
-            while(*name==' ') name++;
-            while(*val ==' ') val++;
-            while(*unit==' ') unit++;
-            char *e;
-            if((e=strchr(name,' '))) *e='\0';
-            if((e=strchr(val ,' '))) *e='\0';
-            if((e=strchr(unit,' '))) *e='\0';
+            /* 去除首部空格 */
+            while(*name==' ' || *name=='\t') name++;
+            while(*val ==' ' || *val =='\t') val++;
+            while(*unit==' ' || *unit=='\t') unit++;
+            /* 去除尾部空格（保留传感器全名，如 "Inlet Temp"） */
+            int nlen=(int)strlen(name); while(nlen>0 && (name[nlen-1]==' '||name[nlen-1]=='\t')) name[--nlen]='\0';
+            int vlen=(int)strlen(val);  while(vlen>0 && (val [vlen-1]==' '||val [vlen-1]=='\t')) val [--vlen]='\0';
+            int ulen=(int)strlen(unit); while(ulen>0 && (unit[ulen-1]==' '||unit[ulen-1]=='\t')) unit[--ulen]='\0';
 
             float v = atof(val);
             /* 过滤无效值（ipmitool 用 "na" 表示无效传感器） */
@@ -238,19 +240,32 @@ void fetch_ipmi(struct AppState *state) {
 
             if((strstr(line_lower,"temp") || strstr(name,"Temp"))
                && state->num_temps < MAX_SENSORS) {
-                struct Sensor *s = &state->temps[state->num_temps];
-                strncpy(s->name, name, 63); s->name[63]='\0';
-                s->history[s->hist_idx] = v;
-                s->hist_idx = (s->hist_idx+1) % HISTORY_LEN;
+                int idx = state->num_temps;
+                strncpy(state->temps[idx].name, name, 63);
+                state->temps[idx].name[63] = '\0';
+                /* 首次读数：预填充整个 history 为当前值，避免图表从零基线起跳显示相同外观 */
+                if(state->temps[idx].count == 0) {
+                    for(int k=0; k<HISTORY_LEN; k++) state->temps[idx].history[k] = v;
+                    state->temps[idx].hist_idx = 0;
+                }
+                state->temps[idx].history[state->temps[idx].hist_idx] = v;
+                state->temps[idx].hist_idx = (state->temps[idx].hist_idx + 1) % HISTORY_LEN;
+                state->temps[idx].count++;
                 state->num_temps++;
             }
             /* 风扇传感器 */
             if((strstr(line_lower,"fan") || strstr(name,"Fan"))
                && state->num_fans < MAX_SENSORS) {
-                struct Sensor *s = &state->fans[state->num_fans];
-                strncpy(s->name, name, 63); s->name[63]='\0';
-                s->history[s->hist_idx] = v;
-                s->hist_idx = (s->hist_idx+1) % HISTORY_LEN;
+                int idx = state->num_fans;
+                strncpy(state->fans[idx].name, name, 63);
+                state->fans[idx].name[63] = '\0';
+                if(state->fans[idx].count == 0) {
+                    for(int k=0; k<HISTORY_LEN; k++) state->fans[idx].history[k] = v;
+                    state->fans[idx].hist_idx = 0;
+                }
+                state->fans[idx].history[state->fans[idx].hist_idx] = v;
+                state->fans[idx].hist_idx = (state->fans[idx].hist_idx + 1) % HISTORY_LEN;
+                state->fans[idx].count++;
                 state->num_fans++;
             }
         }
@@ -286,6 +301,7 @@ void draw_config_editor(struct AppConfig *cfg) {
 
 void edit_config(struct AppConfig *cfg) {
     int ch;
+    timeout(-1); // 进入编辑界面时切为完全阻塞，防止 500ms 超时清屏
     while(1) {
         draw_config_editor(cfg);
         ch = getch();
@@ -296,7 +312,7 @@ void edit_config(struct AppConfig *cfg) {
             refresh();
             int f = getch()-'0';
             char buf[64];
-            echo();
+            echo(); curs_set(1);
             switch(f) {
                 case 1: mvprintw(13,4,"New mode: "); getnstr(buf,15); strcpy(cfg->mode,buf); break;
                 case 2: mvprintw(13,4,"New host: "); getnstr(buf,63); strcpy(cfg->host,buf); break;
@@ -305,9 +321,10 @@ void edit_config(struct AppConfig *cfg) {
                 case 5: mvprintw(13,4,"New interval: "); getnstr(buf,7); cfg->refresh_interval=atoi(buf); break;
                 case 6: mvprintw(13,4,"Remember creds (0/1): "); getnstr(buf,3); cfg->remember_cred=atoi(buf); break;
             }
-            noecho();
+            noecho(); curs_set(0);
         }
     }
+    timeout(500); // 退出编辑界面后恢复非阻塞模式
 }
 
 void draw_main(struct AppState *state) {
@@ -347,37 +364,69 @@ void draw_main(struct AppState *state) {
     
     draw_separator(11, 0, left_w, "System Event Log");
     
-    attron(A_BOLD | COLOR_PAIR(4));
-    for(int i=0;i<5 && 12+i < top_h-1; ++i) mvprintw(12+i,2,"%.*s", left_w-4, state->sel[i]);
-    attroff(A_BOLD | COLOR_PAIR(4));
+    /* SEL: 解析 ipmitool 格式 "ID | date | time | sensor | event | dir"
+       紧凑显示 "时间 事件" 以适应左侧窄列 */
+    for(int i=0;i<5 && 12+i < top_h-1; ++i) {
+        if(state->sel[i][0] == '\0') continue;
+        /* 尝试解析：跳过ID列，取时间+事件字段 */
+        char selcopy[128];
+        strncpy(selcopy, state->sel[i], 127); selcopy[127]='\0';
+        char *tok = strtok(selcopy, "|"); // ID
+        char *date = strtok(NULL, "|");   // date
+        char *ttime = strtok(NULL, "|");  // time
+        char *sensor_f = strtok(NULL, "|"); // sensor
+        char *event_f  = strtok(NULL, "|"); // event
+        if(date && ttime && event_f) {
+            /* 去首尾空格 */
+            while(*date==' ') date++; char *e; if((e=strrchr(date,' '))) *e='\0';
+            while(*ttime==' ') ttime++; if((e=strrchr(ttime,' '))) *e='\0';
+            while(*event_f==' ') event_f++; if((e=strrchr(event_f,' '))) *e='\0';
+            attron(COLOR_PAIR(3) | A_BOLD);
+            mvprintw(12+i, 2, "%.8s", ttime); // HH:MM:SS
+            attroff(COLOR_PAIR(3) | A_BOLD);
+            attron(COLOR_PAIR(4));
+            mvprintw(12+i, 11, "%.*s", left_w-13, event_f);
+            attroff(COLOR_PAIR(4));
+        } else {
+            /* fallback: 直接截断显示原始内容 */
+            attron(COLOR_PAIR(4));
+            mvprintw(12+i, 2, "%.*s", left_w-4, state->sel[i]);
+            attroff(COLOR_PAIR(4));
+        }
+    }
 
     draw_box(0, left_w, temp_h, right_w, "Temperature Sensors");
     for(int i=0;i<state->num_temps && 2+i < temp_h-1;++i) {
         attron(COLOR_PAIR(2) | A_BOLD);
-        mvprintw(2+i, left_w+2, "%-7.7s",state->temps[i].name);
+        mvprintw(2+i, left_w+2, "%-12.12s",state->temps[i].name);
         attroff(COLOR_PAIR(2) | A_BOLD);
-        int chart_w = right_w - 20;
-        if(chart_w > 0) draw_sensor_chart(2+i, left_w+10, chart_w, &state->temps[i]);
+        int chart_w = right_w - 25;
+        if(chart_w > 0) draw_sensor_chart(2+i, left_w+15, chart_w, &state->temps[i]);
     }
     
     draw_box(temp_h, left_w, fan_h, right_w, "Fan Sensors");
     for(int i=0;i<state->num_fans && temp_h+1+i < max_y-2;++i) {
         attron(COLOR_PAIR(1) | A_BOLD);
-        mvprintw(temp_h+1+i, left_w+2, "%-7.7s",state->fans[i].name);
+        mvprintw(temp_h+1+i, left_w+2, "%-12.12s",state->fans[i].name);
         attroff(COLOR_PAIR(1) | A_BOLD);
-        int chart_w = right_w - 20;
-        if(chart_w > 0) draw_sensor_chart(temp_h+1+i, left_w+10, chart_w, &state->fans[i]);
+        int chart_w = right_w - 25;
+        if(chart_w > 0) draw_sensor_chart(temp_h+1+i, left_w+15, chart_w, &state->fans[i]);
     }
     
     // 状态栏
     attron(COLOR_PAIR(5) | A_BOLD);
     for(int i=0; i<max_x; i++) mvprintw(max_y-1, i, " ");
     mvprintw(max_y-1,1," [C] Config   [Q] Quit ");
-    if (strlen(state->last_error) > 0) {
+    if(state->fetching) {
+        attron(COLOR_PAIR(3) | A_BOLD);
+        mvprintw(max_y-1,25," ⟳ Fetching... ");
+        attroff(COLOR_PAIR(3) | A_BOLD);
+    } else if(strlen(state->last_error) > 0) {
         attron(COLOR_PAIR(4) | A_REVERSE | A_BLINK);
-        mvprintw(max_y-1,30," Error: %s ",state->last_error);
+        mvprintw(max_y-1,25," Error: %s ",state->last_error);
         attroff(COLOR_PAIR(4) | A_REVERSE | A_BLINK);
     }
+    attron(COLOR_PAIR(5) | A_BOLD);
     mvprintw(max_y-1,max_x-40," Mode:%s Rfrsh:%ds ",state->config.mode,state->config.refresh_interval);
     attroff(COLOR_PAIR(5) | A_BOLD);
     
@@ -387,8 +436,10 @@ void draw_main(struct AppState *state) {
 int main() {
     setlocale(LC_ALL, "");
     struct AppState state;
+    memset(&state, 0, sizeof(state)); // 关键：全部初始化为零，防止 hist_idx 随机值越界崩溃
     load_config(&state.config);
     initscr(); cbreak(); noecho(); keypad(stdscr,TRUE);
+    curs_set(0);  // 主界面隐藏光标
     timeout(500); // 500ms 不阻塞，用于处理调整大小和定时刷新
     signal(SIGINT,SIG_IGN);
     if(has_colors()) {
@@ -403,15 +454,25 @@ int main() {
         // 尝试使用高亮颜色 (Bright colors)
         init_pair(7, COLOR_MAGENTA, -1);
     }
-    int ch, last_refresh=0;
+    // 启动立即画一帧，避免黑屏等待
+    draw_main(&state);
+
+    int ch;
+    time_t last_refresh = 0;
     while(1) {
-        if(time(NULL)-last_refresh>=state.config.refresh_interval) {
-            fetch_ipmi(&state); last_refresh=time(NULL);
+        time_t now = time(NULL);
+        if(now - last_refresh >= state.config.refresh_interval) {
+            // 先刷新屏幕显示 Fetching 指示，再阻塞拉取数据
+            state.fetching = 1;
+            draw_main(&state);
+            fetch_ipmi(&state);
+            state.fetching = 0;
+            last_refresh = time(NULL);
         }
         draw_main(&state);
         ch = getch();
-        if(ch=='q'||ch=='Q') break;
-        if(ch=='c'||ch=='C') edit_config(&state.config);
+        if(ch == 'q' || ch == 'Q') break;
+        if(ch == 'c' || ch == 'C') edit_config(&state.config);
     }
     endwin();
     return 0;
