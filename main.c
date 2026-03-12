@@ -42,15 +42,9 @@ struct AppState {
     int fetching;  // 1=正在后台拉取数据
 };
 
-void draw_box(int y, int x, int h, int w, const char *title) {
-    // 阴影效果
-    attron(A_DIM);
-    for(int i=1; i<h; ++i) mvprintw(y+i, x+w, " ");
-    for(int i=2; i<=w; ++i) mvprintw(y+h, x+i, " ");
-    attroff(A_DIM);
-
-    // 彩色圆角box
-    attron(COLOR_PAIR(1));
+void draw_box(int y, int x, int h, int w, int id, const char *title) {
+    // 移除阴影，使用扁平暗色边框更接近 btop 风格
+    attron(COLOR_PAIR(6)); 
     mvprintw(y, x, "╭");
     for(int i=1; i<w-1; ++i) mvprintw(y, x+i, "─");
     mvprintw(y, x+w-1, "╮");
@@ -61,60 +55,114 @@ void draw_box(int y, int x, int h, int w, const char *title) {
     mvprintw(y+h-1, x, "╰");
     for(int i=1; i<w-1; ++i) mvprintw(y+h-1, x+i, "─");
     mvprintw(y+h-1, x+w-1, "╯");
+    attroff(COLOR_PAIR(6));
+
     if(title && strlen(title)>0) {
-        attron(A_BOLD | COLOR_PAIR(2));
-        mvprintw(y, x+2, " %s ", title);
-        attroff(A_BOLD | COLOR_PAIR(2));
+        if (id > 0) {
+            // btop 样式的标题栏，左侧带序号 ╭─1info──
+            attron(COLOR_PAIR(6)); mvprintw(y, x+1, "─"); attroff(COLOR_PAIR(6));
+            attron(COLOR_PAIR(4)); mvprintw(y, x+2, "%d", id); attroff(COLOR_PAIR(4));
+            attron(A_BOLD); mvprintw(y, x+3, "%s", title); attroff(A_BOLD);
+            attron(COLOR_PAIR(6)); mvprintw(y, x+3+strlen(title), "─"); attroff(COLOR_PAIR(6));
+        } else {
+            attron(A_BOLD);
+            mvprintw(y, x+2, " %s ", title);
+            attroff(A_BOLD);
+        }
     }
-    attroff(COLOR_PAIR(1));
 }
 
 void draw_separator(int y, int x, int w, const char *title) {
-    attron(COLOR_PAIR(1));
+    attron(COLOR_PAIR(6));
     mvprintw(y, x, "├");
     for(int i=1; i<w-1; ++i) mvprintw(y, x+i, "─");
     mvprintw(y, x+w-1, "┤");
     if(title && strlen(title)>0) {
-        attron(A_BOLD | COLOR_PAIR(2));
-        mvprintw(y, x+2, " %s ", title);
-        attroff(A_BOLD | COLOR_PAIR(2));
+        attron(A_BOLD);
+        mvprintw(y, x+2, "%s", title);
+        attroff(A_BOLD);
+        mvprintw(y, x+2+strlen(title), "─");
     }
-    attroff(COLOR_PAIR(1));
+    attroff(COLOR_PAIR(6));
 }
 
 void draw_sensor_chart(int y, int x, int w, struct Sensor *s) {
-    float mx=0, mn=10000;
-    for(int i=0;i<HISTORY_LEN;++i) {
-        if(s->history[i]>mx) mx=s->history[i];
-        if(s->history[i]<mn) mn=s->history[i];
+    int valid_count = (s->count < HISTORY_LEN) ? s->count : HISTORY_LEN;
+    float mx = 0, mn = 10000;
+    if (valid_count == 0) {
+        mx = 1.0; mn = 0.0;
+    } else {
+        for(int i=0; i<valid_count; ++i) {
+            int idx = (s->hist_idx - valid_count + i + HISTORY_LEN) % HISTORY_LEN;
+            if(s->history[idx] > mx) mx = s->history[idx];
+            if(s->history[idx] < mn) mn = s->history[idx];
+        }
     }
-    if(mx==mn) mx+=1;
+    // 计算动态范围，给予一定的上下文余量，使微小波动也能呈现，但避免因为全是同一个值导致渲染死板
+    if(mx - mn < 2.0) {
+        mx += 1.0;
+        mn -= 1.0;
+    }
+    
     int flash = (time(NULL)%2==0); // 闪烁动画
-    const char* blocks[] = {" ", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
+    // 将原本的粗方块改为精细的盲文点阵 (Braille patterns)，类似于 btop++
+    const char* blocks[] = {" ", "⡀", "▂", "⡄", "⡠", "⡤", "⡴", "⡷", "⣄", "⣆", "⣦", "⣷", "⣿"};
+    int num_blocks = 13;
+    
     for(int i=0;i<w;++i) {
-        int idx = (s->hist_idx+i)%HISTORY_LEN;
+        // 绘制宽度超过历史记录时，左侧留白
+        if (i < w - HISTORY_LEN) {
+            mvprintw(y, x+i, " ");
+            continue;
+        }
+
+        // 取最新的记录：宽度小于时截取最新，宽度大于时靠右对齐
+        int data_offset = (w < HISTORY_LEN) ? (HISTORY_LEN - w + i) : (i - (w - HISTORY_LEN));
+        
+        // 如果数据还没收集到这个偏移量，就不绘制（留白），实现从右向左徐徐推进的效果
+        if (data_offset < HISTORY_LEN - valid_count) {
+            mvprintw(y, x+i, " ");
+            continue;
+        }
+
+        int idx = (s->hist_idx + data_offset) % HISTORY_LEN;
         float v = s->history[idx];
-        int level = (int)((v-mn)/(mx-mn)*7);
+
+        int level = (int)((v-mn)/(mx-mn)*(num_blocks-0.01)); // 强映射到 0 到 num_blocks-1 
         if(level < 0) level = 0;
-        if(level > 7) level = 7;
+        if(level >= num_blocks) level = num_blocks - 1;
         
-        // 渐变色：低蓝，高红，中绿
-        if(v < mn + (mx-mn)*0.33) attron(COLOR_PAIR(6));
-        else if(v > mn + (mx-mn)*0.66) attron(COLOR_PAIR(4));
-        else attron(COLOR_PAIR(3));
+        // 动态基于绝对数值决定颜色（例如，温度/风扇报警阈值可调，这处假设：低绿、中黄、高红）
+        // 对于风扇（数值通常大于500），定义：<2000 绿，2000-5000 黄， >5000 红
+        // 对于温度（数值通常小于200），定义：<40 绿，40-65 黄， >65 红
+        int color_pair = 3; // 默认绿
+        int is_temp = 0;
+        if (v > 500) { // 大概率是风扇
+            if (v > 8000) color_pair = 4; // 红
+            else if (v > 4000) color_pair = 2; // 黄
+            else color_pair = 3; // 绿
+        } else { // 大概率是温度
+            is_temp = 1;
+            if (v > 70) color_pair = 4; // 红
+            else if (v > 45) color_pair = 2; // 黄
+            else color_pair = 3; // 绿
+        }
         
-        // 温度变化大时闪烁
-        if(level>=6 && flash) attron(A_BLINK);
+        attron(COLOR_PAIR(color_pair));
+        
+        // 仅温度极高时闪烁，风扇即使红警也不闪烁
+        if(color_pair == 4 && is_temp && v > 75 && flash) attron(A_BLINK);
         mvprintw(y, x+i, "%s", blocks[level]);
         attroff(A_BLINK);
-        attroff(COLOR_PAIR(3)); attroff(COLOR_PAIR(4)); attroff(COLOR_PAIR(6));
+        attroff(COLOR_PAIR(color_pair));
     }
     // 动画符号与当前值
     static const char *anim[] = {"|", "/", "-", "\\"};
     int frame = (time(NULL)%4);
     int last_idx = (s->hist_idx - 1 + HISTORY_LEN) % HISTORY_LEN;
     attron(A_BOLD);
-    mvprintw(y, x + w + 1, "%5.1f %s", s->history[last_idx], anim[frame]);
+    // 使用 %7.1f 适应上万的风扇转速，确保对齐且不覆盖其他内容
+    mvprintw(y, x + w + 1, "%7.1f %s", s->history[last_idx], anim[frame]);
     attroff(A_BOLD);
 }
 
@@ -243,11 +291,6 @@ void fetch_ipmi(struct AppState *state) {
                 int idx = state->num_temps;
                 strncpy(state->temps[idx].name, name, 63);
                 state->temps[idx].name[63] = '\0';
-                /* 首次读数：预填充整个 history 为当前值，避免图表从零基线起跳显示相同外观 */
-                if(state->temps[idx].count == 0) {
-                    for(int k=0; k<HISTORY_LEN; k++) state->temps[idx].history[k] = v;
-                    state->temps[idx].hist_idx = 0;
-                }
                 state->temps[idx].history[state->temps[idx].hist_idx] = v;
                 state->temps[idx].hist_idx = (state->temps[idx].hist_idx + 1) % HISTORY_LEN;
                 state->temps[idx].count++;
@@ -259,10 +302,6 @@ void fetch_ipmi(struct AppState *state) {
                 int idx = state->num_fans;
                 strncpy(state->fans[idx].name, name, 63);
                 state->fans[idx].name[63] = '\0';
-                if(state->fans[idx].count == 0) {
-                    for(int k=0; k<HISTORY_LEN; k++) state->fans[idx].history[k] = v;
-                    state->fans[idx].hist_idx = 0;
-                }
                 state->fans[idx].history[state->fans[idx].hist_idx] = v;
                 state->fans[idx].hist_idx = (state->fans[idx].hist_idx + 1) % HISTORY_LEN;
                 state->fans[idx].count++;
@@ -288,7 +327,7 @@ void fetch_ipmi(struct AppState *state) {
 
 void draw_config_editor(struct AppConfig *cfg) {
     clear();
-    draw_box(1,2,12,60,"Edit Config");
+    draw_box(1,2,12,60,0,"config");
     mvprintw(3,4,"Mode (inband/oob): %s",cfg->mode);
     mvprintw(4,4,"Host: %s",cfg->host);
     mvprintw(5,4,"Username: %s",cfg->username);
@@ -328,19 +367,31 @@ void edit_config(struct AppConfig *cfg) {
 }
 
 void draw_main(struct AppState *state) {
-    clear();
+    // 移除 clear()，防止全屏闪烁。我们依靠后面的全屏空格或具体内容覆盖
     int max_y, max_x;
     getmaxyx(stdscr, max_y, max_x);
     
-    int left_w = 36;
-    int right_w = max_x - left_w - 1;
-    if(right_w < 30) right_w = 30; // 最小宽度
+    // 清理一下上一次可能残留的画面剩余部分（背景填充），但不引发整屏同时清空的重绘闪烁
+    for(int i=0; i<max_y; i++) {
+        mvhline(i, 0, ' ', max_x);
+    }
     
-    int top_h = max_y - 2; // 留给状态栏
+    int sel_h = 7; // 底部 SEL 面板高度
+    int top_h = max_y - 2 - sel_h; // 上方内容区总高度 (-2是状态栏)
+    if(top_h < 12) top_h = 12; // 保证上方有足够空间
+    
+    int left_w = 32;
+    int right_w = max_x - left_w - 1;
+    if(right_w < 30) {
+        right_w = 30; // 最小宽度
+        left_w = max_x - right_w - 1;
+        if(left_w < 20) left_w = 20;
+    }
+    
     int temp_h = top_h / 2;
     int fan_h = top_h - temp_h;
     
-    draw_box(0,0,top_h,left_w,"Device Info");
+    draw_box(0,0,top_h,left_w,1,"info");
     
     attron(A_BOLD | COLOR_PAIR(2));
     mvprintw(2,2,"Power:");
@@ -349,92 +400,120 @@ void draw_main(struct AppState *state) {
     mvprintw(2,9,"%s", state->power);
     mvprintw(3,10,"%s", state->bmc);
     
-    draw_separator(4, 0, left_w, "Configuration");
+    draw_separator(5, 0, left_w, "config");
     
     attron(A_BOLD | COLOR_PAIR(1));
-    mvprintw(5,2,"Mode: %s",state->config.mode);
-    mvprintw(6,2,"Host: %s",state->config.host);
-    mvprintw(7,2,"User: %s",state->config.username);
+    mvprintw(6,2,"Mode: %s",state->config.mode);
+    mvprintw(7,2,"Host: %s",state->config.host);
+    mvprintw(8,2,"User: %s",state->config.username);
     attroff(A_BOLD | COLOR_PAIR(1));
     
     attron(A_BOLD | COLOR_PAIR(3));
-    mvprintw(8,2,"Refresh: %d s",state->config.refresh_interval);
-    mvprintw(9,2,"Remember: %s",state->config.remember_cred ? "yes" : "no");
+    mvprintw(9,2,"Refresh: %d s",state->config.refresh_interval);
+    mvprintw(10,2,"Remember: %s",state->config.remember_cred ? "yes" : "no");
     attroff(A_BOLD | COLOR_PAIR(3));
+
+    // 绘制下方的长条 SEL
+    int sel_start_y = top_h;
+    draw_box(sel_start_y, 0, sel_h, max_x, 4, "sel");
     
-    draw_separator(11, 0, left_w, "System Event Log");
-    
-    /* SEL: 解析 ipmitool 格式 "ID | date | time | sensor | event | dir"
-       紧凑显示 "时间 事件" 以适应左侧窄列 */
-    for(int i=0;i<5 && 12+i < top_h-1; ++i) {
+    /* SEL: 解析 ipmitool 格式 "ID | date | time | sensor | event | dir" */
+    for(int i=0;i<5 && i < sel_h-2; ++i) {
         if(state->sel[i][0] == '\0') continue;
-        /* 尝试解析：跳过ID列，取时间+事件字段 */
         char selcopy[128];
         strncpy(selcopy, state->sel[i], 127); selcopy[127]='\0';
+        
         char *tok = strtok(selcopy, "|"); // ID
         char *date = strtok(NULL, "|");   // date
         char *ttime = strtok(NULL, "|");  // time
         char *sensor_f = strtok(NULL, "|"); // sensor
         char *event_f  = strtok(NULL, "|"); // event
+        
         if(date && ttime && event_f) {
             /* 去首尾空格 */
             while(*date==' ') date++; char *e; if((e=strrchr(date,' '))) *e='\0';
             while(*ttime==' ') ttime++; if((e=strrchr(ttime,' '))) *e='\0';
+            if(!sensor_f) sensor_f = "";
+            else { while(*sensor_f==' ') sensor_f++; if((e=strrchr(sensor_f,' '))) *e='\0'; }
             while(*event_f==' ') event_f++; if((e=strrchr(event_f,' '))) *e='\0';
+            
             attron(COLOR_PAIR(3) | A_BOLD);
-            mvprintw(12+i, 2, "%.8s", ttime); // HH:MM:SS
+            mvprintw(sel_start_y + 1 + i, 2, "%-10.10s", date); // Date
+            mvprintw(sel_start_y + 1 + i, 13, "%-8.8s", ttime); // Time
             attroff(COLOR_PAIR(3) | A_BOLD);
+            
+            attron(COLOR_PAIR(1));
+            mvprintw(sel_start_y + 1 + i, 23, "%-20.20s", sensor_f); // Sensor
+            attroff(COLOR_PAIR(1));
+            
             attron(COLOR_PAIR(4));
-            mvprintw(12+i, 11, "%.*s", left_w-13, event_f);
+            mvprintw(sel_start_y + 1 + i, 45, "%.*s", max_x - 47, event_f); // Event
             attroff(COLOR_PAIR(4));
         } else {
-            /* fallback: 直接截断显示原始内容 */
+            /* fallback: 显示完整原文 */
             attron(COLOR_PAIR(4));
-            mvprintw(12+i, 2, "%.*s", left_w-4, state->sel[i]);
+            mvprintw(sel_start_y + 1 + i, 2, "%.*s", max_x - 4, state->sel[i]);
             attroff(COLOR_PAIR(4));
         }
     }
 
-    draw_box(0, left_w, temp_h, right_w, "Temperature Sensors");
+    draw_box(0, left_w, temp_h, right_w, 2, "temps");
     for(int i=0;i<state->num_temps && 2+i < temp_h-1;++i) {
         attron(COLOR_PAIR(2) | A_BOLD);
-        mvprintw(2+i, left_w+2, "%-12.12s",state->temps[i].name);
+        mvprintw(2+i, left_w+2, "%-8.8s",state->temps[i].name);
         attroff(COLOR_PAIR(2) | A_BOLD);
-        int chart_w = right_w - 25;
-        if(chart_w > 0) draw_sensor_chart(2+i, left_w+15, chart_w, &state->temps[i]);
+        // 让出多些空间给后面的数值 (之前是17，现在让出21列空间)
+        int chart_w = right_w - 21;
+        if(chart_w > 0) draw_sensor_chart(2+i, left_w+11, chart_w, &state->temps[i]);
     }
     
-    draw_box(temp_h, left_w, fan_h, right_w, "Fan Sensors");
-    for(int i=0;i<state->num_fans && temp_h+1+i < max_y-2;++i) {
+    draw_box(temp_h, left_w, fan_h, right_w, 3, "fans");
+    for(int i=0;i<state->num_fans && temp_h+1+i < top_h-1;++i) { // 修正这里，限制不越过 top_h
         attron(COLOR_PAIR(1) | A_BOLD);
-        mvprintw(temp_h+1+i, left_w+2, "%-12.12s",state->fans[i].name);
+        mvprintw(temp_h+1+i, left_w+2, "%-8.8s",state->fans[i].name);
         attroff(COLOR_PAIR(1) | A_BOLD);
-        int chart_w = right_w - 25;
-        if(chart_w > 0) draw_sensor_chart(temp_h+1+i, left_w+15, chart_w, &state->fans[i]);
+        // 让出多些空间给后面的转速 (同上)
+        int chart_w = right_w - 21;
+        if(chart_w > 0) draw_sensor_chart(temp_h+1+i, left_w+11, chart_w, &state->fans[i]);
     }
     
-    // 状态栏
-    attron(COLOR_PAIR(5) | A_BOLD);
+    // 状态栏 (btop 风格)
     for(int i=0; i<max_x; i++) mvprintw(max_y-1, i, " ");
-    mvprintw(max_y-1,1," [C] Config   [Q] Quit ");
+    
+    attron(COLOR_PAIR(6) | A_BOLD); 
+    mvprintw(max_y-1, 0, " select ");
+    attroff(COLOR_PAIR(6) | A_BOLD);
+    
+    attron(COLOR_PAIR(4)); mvprintw(max_y-1, 8, "C"); attroff(COLOR_PAIR(4));
+    printw("onfig   ");
+    attron(COLOR_PAIR(4)); printw("Q"); attroff(COLOR_PAIR(4));
+    printw("uit ");
+
     if(state->fetching) {
         attron(COLOR_PAIR(3) | A_BOLD);
-        mvprintw(max_y-1,25," ⟳ Fetching... ");
+        printw("  ⟳ fetching... ");
         attroff(COLOR_PAIR(3) | A_BOLD);
     } else if(strlen(state->last_error) > 0) {
-        attron(COLOR_PAIR(4) | A_REVERSE | A_BLINK);
-        mvprintw(max_y-1,25," Error: %s ",state->last_error);
-        attroff(COLOR_PAIR(4) | A_REVERSE | A_BLINK);
+        attron(COLOR_PAIR(4) | A_BOLD);
+        printw("  Error: %s ",state->last_error);
+        attroff(COLOR_PAIR(4) | A_BOLD);
     }
-    attron(COLOR_PAIR(5) | A_BOLD);
-    mvprintw(max_y-1,max_x-40," Mode:%s Rfrsh:%ds ",state->config.mode,state->config.refresh_interval);
-    attroff(COLOR_PAIR(5) | A_BOLD);
+
+    attron(COLOR_PAIR(6) | A_DIM);
+    mvprintw(max_y-1, max_x-22, "mode:%s rfrsh:%ds", state->config.mode, state->config.refresh_interval);
+    attroff(COLOR_PAIR(6) | A_DIM);
     
     refresh();
 }
 
 int main() {
     setlocale(LC_ALL, "");
+    
+    // 发送 ANSI 转义序列请求终端模拟器将窗口强制调整为 40 行 95 列
+    printf("\033[8;40;95t");
+    fflush(stdout);
+    usleep(50000); // 稍微等待 50 毫秒，让终端模拟器有时间处理缩放
+    
     struct AppState state;
     memset(&state, 0, sizeof(state)); // 关键：全部初始化为零，防止 hist_idx 随机值越界崩溃
     load_config(&state.config);
@@ -445,12 +524,12 @@ int main() {
     if(has_colors()) {
         start_color();
         use_default_colors();
-        init_pair(1, COLOR_CYAN, -1);      // box title - 亮色
+        init_pair(1, COLOR_CYAN, -1);      // old var
         init_pair(2, COLOR_YELLOW, -1);    // sensor name
         init_pair(3, COLOR_GREEN, -1);     // normal value
-        init_pair(4, COLOR_RED, -1);       // high temp/fan
-        init_pair(5, COLOR_WHITE, COLOR_BLUE);   // status bar (亮色背景)
-        init_pair(6, COLOR_BLUE, -1);      // low temp/fan
+        init_pair(4, COLOR_RED, -1);       // high temp/fan & warning
+        init_pair(5, COLOR_WHITE, COLOR_BLUE); 
+        init_pair(6, COLOR_WHITE, -1);     // standard border color
         // 尝试使用高亮颜色 (Bright colors)
         init_pair(7, COLOR_MAGENTA, -1);
     }
