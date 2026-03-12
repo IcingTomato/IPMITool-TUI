@@ -9,7 +9,7 @@
 #include <locale.h>
 #include <ctype.h>
 
-#define CONFIG_PATH "./.config/ipmi_tui/config.ini"
+#define CONFIG_PATH "./config.ini"
 #define MAX_SENSORS 16
 #define HISTORY_LEN 40
 
