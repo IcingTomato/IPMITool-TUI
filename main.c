@@ -65,9 +65,10 @@ void draw_box(int y, int x, int h, int w, int id, const char *title) {
             attron(A_BOLD); mvprintw(y, x+3, "%s", title); attroff(A_BOLD);
             attron(COLOR_PAIR(6)); mvprintw(y, x+3+strlen(title), "─"); attroff(COLOR_PAIR(6));
         } else {
-            attron(A_BOLD);
-            mvprintw(y, x+2, " %s ", title);
-            attroff(A_BOLD);
+            // 没有序号时的标题栏 ╭─config──
+            attron(COLOR_PAIR(6)); mvprintw(y, x+1, "─"); attroff(COLOR_PAIR(6));
+            attron(A_BOLD); mvprintw(y, x+2, "%s", title); attroff(A_BOLD);
+            attron(COLOR_PAIR(6)); mvprintw(y, x+2+strlen(title), "─"); attroff(COLOR_PAIR(6));
         }
     }
 }
@@ -391,31 +392,31 @@ void draw_main(struct AppState *state) {
     int temp_h = top_h / 2;
     int fan_h = top_h - temp_h;
     
-    draw_box(0,0,top_h,left_w,1,"info");
-    
-    attron(A_BOLD | COLOR_PAIR(2));
-    mvprintw(2,2,"Power:");
-    mvprintw(3,2,"BMC FW:");
-    attroff(A_BOLD | COLOR_PAIR(2));
-    mvprintw(2,9,"%s", state->power);
-    mvprintw(3,10,"%s", state->bmc);
-    
-    draw_separator(5, 0, left_w, "config");
+    draw_box(0,0,top_h,left_w,0,"config");
     
     attron(A_BOLD | COLOR_PAIR(1));
-    mvprintw(6,2,"Mode: %s",state->config.mode);
-    mvprintw(7,2,"Host: %s",state->config.host);
-    mvprintw(8,2,"User: %s",state->config.username);
+    mvprintw(2,2,"Mode: %s",state->config.mode);
+    mvprintw(3,2,"Host: %s",state->config.host);
+    mvprintw(4,2,"User: %s",state->config.username);
     attroff(A_BOLD | COLOR_PAIR(1));
     
     attron(A_BOLD | COLOR_PAIR(3));
-    mvprintw(9,2,"Refresh: %d s",state->config.refresh_interval);
-    mvprintw(10,2,"Remember: %s",state->config.remember_cred ? "yes" : "no");
+    mvprintw(5,2,"Refresh: %d s",state->config.refresh_interval);
+    mvprintw(6,2,"Remember: %s",state->config.remember_cred ? "yes" : "no");
     attroff(A_BOLD | COLOR_PAIR(3));
+
+    draw_separator(8, 0, left_w, "info");
+    
+    attron(A_BOLD | COLOR_PAIR(2));
+    mvprintw(9,2,"Power:");
+    mvprintw(10,2,"BMC FW:");
+    attroff(A_BOLD | COLOR_PAIR(2));
+    mvprintw(9,9,"%s", state->power);
+    mvprintw(10,10,"%s", state->bmc);
 
     // 绘制下方的长条 SEL
     int sel_start_y = top_h;
-    draw_box(sel_start_y, 0, sel_h, max_x, 4, "sel");
+    draw_box(sel_start_y, 0, sel_h, max_x, 0, "sel");
     
     /* SEL: 解析 ipmitool 格式 "ID | date | time | sensor | event | dir" */
     for(int i=0;i<5 && i < sel_h-2; ++i) {
@@ -457,7 +458,7 @@ void draw_main(struct AppState *state) {
         }
     }
 
-    draw_box(0, left_w, temp_h, right_w, 2, "temps");
+    draw_box(0, left_w, temp_h, right_w, 0, "temps");
     for(int i=0;i<state->num_temps && 2+i < temp_h-1;++i) {
         attron(COLOR_PAIR(2) | A_BOLD);
         mvprintw(2+i, left_w+2, "%-8.8s",state->temps[i].name);
@@ -467,7 +468,7 @@ void draw_main(struct AppState *state) {
         if(chart_w > 0) draw_sensor_chart(2+i, left_w+11, chart_w, &state->temps[i]);
     }
     
-    draw_box(temp_h, left_w, fan_h, right_w, 3, "fans");
+    draw_box(temp_h, left_w, fan_h, right_w, 0, "fans");
     for(int i=0;i<state->num_fans && temp_h+1+i < top_h-1;++i) { // 修正这里，限制不越过 top_h
         attron(COLOR_PAIR(1) | A_BOLD);
         mvprintw(temp_h+1+i, left_w+2, "%-8.8s",state->fans[i].name);
