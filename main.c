@@ -107,8 +107,8 @@ void draw_sensor_chart(int y, int x, int w, struct Sensor *s) {
     
     int flash = (time(NULL)%2==0); // 闪烁动画
     // 将原本的粗方块改为精细的盲文点阵 (Braille patterns)，类似于 btop++
-    const char* blocks[] = {" ", "⡀", "▂", "⡄", "⡠", "⡤", "⡴", "⡷", "⣄", "⣆", "⣦", "⣷", "⣿"};
-    int num_blocks = 13;
+    const char* blocks[] = {" ", "⡀", "⣀", "⣄", "⣤", "⣦", "⣶", "⣷", "⣿"};
+    int num_blocks = 9;
     
     for(int i=0;i<w;++i) {
         // 绘制宽度超过历史记录时，左侧留白
