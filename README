@@ -10,3 +10,8 @@ remember_cred=0
 
 config.ini path:
 ~/.config/ipmi_tui/config.ini
+
+
+compile with:
+gcc main.c -lncursesw -o ipmi_tui
+
