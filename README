@@ -15,3 +15,9 @@ config.ini path:
 compile with:
 gcc main.c -lncursesw -o ipmi_tui
 
+gcc main.c \
+-I$(brew --prefix ncurses)/include \
+-L$(brew --prefix ncurses)/lib \
+-lncursesw \
+-o ipmi_tui
+
